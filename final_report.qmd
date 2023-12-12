@@ -1,0 +1,405 @@
+---
+title: "Surv727 Final Project: NYC Bikeshare Usage Analysis"
+author: "Anne Chang"
+date: 2023-12-12
+format:
+  pdf:
+    documentclass: scrartcl
+    papersize: letter
+editor: visual
+execute:
+  echo: false
+  warning: false
+  output: false
+---
+
+# 1. Introduction
+
+## 1.1 Topic
+
+This project analyzes the usage of [Citi Bike](https://citibikenyc.com), the bike-sharing program of New York City. The focuses of the analysis are:
+
+1.  The distribution of bike stations in NYC and their capacity
+
+2.  The usage of Citi Bike and whether it changes at different years or months
+
+3.  Whether the usage differs for different types of users
+
+## 1.2 Dataset
+
+The dataset used for this project is "[NYC Bike Trip](https://console.cloud.google.com/marketplace/product/city-of-new-york/nyc-citi-bike?project=surv-727-test-403119)", a public database from the City of New York hosted on Google BigQuery. This dataset has 2 tables: "Citibike_stations", which includes location and capacity data of more than 2000 bike stations in NYC; "Citibike_trips", which includes data from 58 million bike trips in 2012 to 2018. Trip date, duration, start and end stations, and user type are important variables used in the analysis.
+
+## 1.3 Github Repository, Packages, maps
+
+Please find the relevant files for this project at: <https://github.com/annechang11/surv727-final-project>
+
+`DBI`, `ggplot`, `ggmap`, and `dbplyr` are the main R packages used in this project. Stadia Maps is the map provider for map visualizations.
+
+# 2. Analysis
+
+## 2.1 Bike Station analysis
+
+```{r}
+# load the packages
+library(tidyverse)
+library(DBI)
+library(dbplyr)
+library(bigrquery)
+library(ggmap)
+library(RColorBrewer)
+```
+
+```{r}
+# connect to BigQuery
+con <- dbConnect(
+  bigrquery::bigquery(),
+  project = "bigquery-public-data",
+  dataset = "new_york_citibike",
+  billing = "surv-727-test-403119"
+)
+con
+```
+
+To begin the analysis, I connected to BigQuery and accessed the dataset using `dbConnect` from the `DBI` package.
+
+I first checked how many working bike stations there are, defined as stations that have a non-zero number of bikes and are available for renting and returning bikes.
+
+```{sql connection = con}
+#| tbl-cap-location: bottom
+#| tbl-cap: "Number of working bike stations"
+
+SELECT COUNT (DISTINCT name) AS num_of_working_stations
+FROM citibike_stations
+WHERE name IS NOT NULL AND
+latitude IS NOT NULL AND 
+longitude IS NOT NULL AND
+num_bikes_available != 0 AND
+is_renting IS true;
+
+```
+
+There are 2086 working bike stations. I visualized their locations by storing the queried table as a R dataframe and plotting each stations on a NYC map using `ggmap`.
+
+```{r}
+# store the query in a R object
+query <-
+  "SELECT name, latitude, longitude, num_bikes_available, 
+FROM citibike_stations
+WHERE name IS NOT NULL AND
+latitude IS NOT NULL AND 
+longitude IS NOT NULL AND
+num_bikes_available != 0 AND
+is_renting IS true
+ORDER BY longitude DESC;"
+
+# store the result in a R table
+bike_stat_table <- dbGetQuery(con, query)
+```
+
+```{r}
+# stadia maps key
+stadia_key <- "36c51661-7684-4179-bc11-689fa6bae3c2"
+register_stadiamaps(stadia_key, write = TRUE)
+```
+
+```{r}
+# get NYC map 
+bbox <- c(left = -74.08670, bottom = 40.63338, right = -73.84978, top = 40.88630)
+map <- get_stadiamap(bbox = bbox, zoom = 12, maptype = "stamen_toner_lite")
+```
+
+```{r}
+#| label: bike_station_map
+#| fig-cap: "Citi Bike Stations in NYC"
+#| output: true
+
+# create the bike station map
+ggmap(map) + 
+geom_point(aes(x = longitude, y = latitude, color=num_bikes_available), data = bike_stat_table, alpha = .8, size=0.3) +
+scale_color_gradient(low = "blue", high = "orange")
+```
+
+From Figure 1, we can see that as of 2018, the bike stations cover Manhattan, Brooklyn, Queens, and west side of Jersey City. (Note: areas that were expanded to after 2018, e.g. Bronx, are not included in the dataset).
+
+Most bike stations have a capacity of under 25 bikes, showing as blue dots on the map, while some stations at Midtown to Lower Manhattan and downtown Brooklyn have a high capacity of 75 or more bikes, showing as orange dots on the map.
+
+The mean number of bikes per station is 15.5, and the median is 12, suggesting again that most bike stations are small with exception of a few large stations with 75+ bikes.
+
+## 2.2 Bike trip analysis -- number of trips
+
+Next, I analyzed the number of bike trips by year and month. I used the SQL EXTRACT function to obtain the year and month information for each trip from the database, and plotted the number of trips by year and month. Figure 2 below shows the result.
+
+```{r}
+# num of trip by year and month
+# store the query in a R object
+query2 <-
+  "SELECT EXTRACT(YEAR FROM starttime) AS year,EXTRACT(MONTH FROM starttime) AS month, count(*) AS num_of_trips
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY EXTRACT(YEAR FROM starttime), EXTRACT(MONTH FROM starttime);"
+
+# store the result in a R table
+trip_year_month_table <- dbGetQuery(con, query2)
+```
+
+```{r}
+# plot the year and month usage with a line plot
+# convert year and month to be categorical variable
+trip_year_month_table$month <- as.factor(trip_year_month_table$month)
+trip_year_month_table$year <- as.factor(trip_year_month_table$year)
+```
+
+```{r}
+#| label: bike_trip_year_month_usage
+#| fig-cap: "Number of bike trips by year and month"
+#| output: true
+
+ggplot(data=trip_year_month_table, aes(x=month, y=num_of_trips, group=year, color=year)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+    scale_color_brewer(palette="BuPu")
+```
+
+From Figure 2 we can observe two things:
+
+1.  The number of trips increased year by year from 2013 to 2017. The reason is likely twofold: over time more people started to know and use the shared bikes, and the bike program continued to expand their coverage and capacity, attracting more new users.
+
+2.  There is an apparent seasonal difference in terms of number of trips. January and February had the lowest numbers of trips likely due to the cold weather. As spring and summer arrived, the numbers of bike trips increasingly rose from March to September, and fell again in fall from October to December.
+
+## 2.3 Bike trip analysis -- trip duration
+
+Another factor to look at is the duration of trips. Figure 3 and Figure 4 below show the average trip duration (in minute) by year and by month.
+
+```{r}
+# trip duration by year
+query3 <-
+  "SELECT EXTRACT(YEAR FROM starttime) AS year, ROUND(AVG(tripduration)/60, 1) as Avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY year
+ORDER BY year;"
+
+# store the result in a R table
+avg_duration_year <- dbGetQuery(con, query3)
+```
+
+```{r}
+# trip duration by month
+query4 <-
+  "SELECT EXTRACT(MONTH FROM starttime) AS month, ROUND(AVG(tripduration)/60, 1) as Avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY month
+ORDER BY month;"
+
+# store the result in a R table
+avg_duration_month <- dbGetQuery(con, query4)
+```
+
+```{r}
+#| label: trip_duration_by_year
+#| fig-cap: "Trip duration by year"
+#| fig-width: 4
+#| fig-height: 2
+#| output: true
+
+avg_duration_year$year <- as.factor(avg_duration_year$year)
+
+ggplot(data=avg_duration_year, aes(x=year, y=Avg_trip_time)) +
+  geom_bar(stat="identity", width=0.7, fill="steelblue") + 
+  geom_text(aes(label=Avg_trip_time), vjust=1.6, color="white", size=3) +
+  labs(y= "Avg trip duration (min)") +
+  theme_minimal()
+
+```
+
+```{r}
+#| label: trip_duration_by_month
+#| fig-cap: "Trip duration by month"
+#| fig-width: 5
+#| fig-height: 2
+#| output: true
+
+avg_duration_month$month <- as.factor(avg_duration_month$month)
+
+ggplot(data=avg_duration_month, aes(x=month, y=Avg_trip_time)) +
+  geom_bar(stat="identity", width=0.8, fill="steelblue") + 
+  geom_text(aes(label=Avg_trip_time), vjust=1.6, color="white", size=3) +
+  labs(y= "Avg trip duration (min)") +
+  theme_minimal()
+
+```
+
+From Figure 3 and Figure 4, we can see that:
+
+-   The average trip duration increased over year, from about 14 minutes in 2014 to about 17 minutes in 2017. (Note: 2013 and 2018 data has missing months, so their average duration are not comparable to other years.)
+
+-   There is a seasonal difference in terms of trip duration. The winter months have lower average trip duration (13-14 minutes per trip) than the summer months (16-17 minutes per trip).
+
+## 2.4 Bike trip analysis -- user types
+
+Besides year and month, another interesting variable is whether the bike trip is made by a "subscriber", who holds an annual ridership plan, or a "customer", who pays for a single trip or a day pass to ride the bike.
+
+```{sql connection = con}
+#| tbl-cap-location: bottom
+#| tbl-cap: "Subscriber trips vs Customer trips"
+SELECT usertype, COUNT(usertype) as num_of_trip, ROUND(AVG(tripduration)/60, 1) as Avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY usertype;
+```
+
+From the queried result above, we can see big differences among subscribers and customers in terms of their bike usage. First, subscribers took much more bike trips than customers -- about 7 times more. Second, the trips taken by subscribers on average were around 13 minutes, while the trips taken by customers were much longer, on overage 36 minutes.
+
+These differences are likely associated with the different purposes of trips: subscribers likely use the trip for commuting or short-distance connecting, while the customers are more likely to be tourists who bought a day pass or single ride pass and used the bike to tour NYC, and hence the longer trip duration.
+
+## 2.4 Popular Bike Routes
+
+Next, I analyzed the popular shared bike "routes", defined as different combinations of a start station (where the bike was rented) and an end station (where the bike was returned). I used the SQL CONCAT function to concatenate the start and end stations to be routes, and looked at the number of trips for each route to understand its popularity. Below is the result of the top 10 most popular routes, their number of trips and average trip duration.
+
+```{sql connection = con}
+#| tbl-cap-location: bottom
+#| tbl-cap: "Most popular bike routes"
+SELECT
+  CONCAT(start_station_name, " to ", end_station_name) as route, 
+  COUNT(*) as num_trips,
+  ROUND(AVG(cast(tripduration as int64) / 60),1) as duration
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY start_station_name, end_station_name
+ORDER BY num_trips DESC
+LIMIT 10;
+```
+
+From the table, we can see that:
+
+-   There are some "routes" that share the same start station and end station. In fact, the top 4 routes are all this type of routes.
+
+-   For routes that have different start and end stations, the most popular route is "12 Ave & W 40 St to West St & Chambers St", which was taken 18667 times and for on average 24 minutes.
+
+-   The next two popular routes with different start and end stations are quite similar. Both start from W 21 St & 6 Ave, and end at W 22 St & 9 Ave or W 22 St & 10 Ave. These 2 routes have a volume of 17509 times and 15120 times, and the average duration is 5 minutes (to 9 Ave) and 7 minutes (to 10 Ave).
+
+However, when looking at popular routes taken by different types of users, we see very different patterns among subscribers and customers.
+
+Figure 5 below shows the top 5 most popular routes taken by the subscribers, and Figure 6 shows the most popular "routes" taken by the customers.
+
+```{r}
+# top 5 most popular routes by subscriber
+#| eval: false
+#| include: false
+
+query <-'
+SELECT
+  usertype,
+  CONCAT(start_station_name, " to ", end_station_name) as route, 
+  COUNT(*) as num_trips,
+  ROUND(AVG(cast(tripduration as int64) / 60),1) as avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0 AND 
+usertype = "Subscriber"
+GROUP BY start_station_name, end_station_name, usertype
+ORDER BY num_trips DESC
+LIMIT 10;'
+```
+
+```{r}
+# top 5 most popular routes by customer
+#| eval: false
+#| include: false
+
+query <- '
+SELECT
+  usertype,
+  CONCAT(start_station_name, " to ", end_station_name) as route, 
+  COUNT(*) as num_trips,
+  ROUND(AVG(cast(tripduration as int64) / 60),1) as avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0 AND 
+usertype = "Customer"
+GROUP BY start_station_name, end_station_name, usertype
+ORDER BY num_trips DESC
+LIMIT 10;'
+```
+
+```{r}
+# get Manhattan map 
+bbox2 <- c(left = -74.02, bottom = 40.7, right = -73.96, top = 40.775)
+map2 <- get_stadiamap(bbox = bbox2, zoom = 12, maptype = "stamen_toner_lite")
+```
+
+```{r}
+# store subscriber top 5 routes in a df
+pop_route_subscriber <- data.frame(id = 1:5, 
+                   lat_1 = c(40.74174, 40.74174, 40.75187, 40.74692, 40.75187), 
+                   lon_1 = c(-73.99416, -73.99416, -73.97771, -74.00452, -73.97771), 
+                   lat_2 = c(40.7455, 40.74692, 40.7502, 40.74475, 40.74096), 
+                   lon_2 = c(-74.00197, -74.00452, -73.99093, -73.99915, -73.98602),
+                   route = c("W 21 St & 6 Ave to W 22 St & 9 Ave", "W 21 St & 6 Ave to W 22 St & 10 Ave","Pershing Square North to W 33 St & 7 Ave", "W 22 St & 10 Ave to W 22 St & 8 Ave", "Pershing Square North to E 24 St & Park Ave S"))
+
+```
+
+```{r}
+#| label: top_routes_by_subscriber
+#| fig-cap: "Most popular bike routes taken by subscribers"
+#| output: true
+
+ggmap(map2) + 
+geom_segment(data = pop_route_subscriber, 
+             aes(x = lon_1, y = lat_1, xend = lon_2, yend = lat_2, color = route), size = 1.5, alpha = 0.8, lineend = "round")
+```
+
+```{r}
+# store customer top 5 routes in a df
+pop_station_customer <- data.frame(id = 1:4, 
+                   lat = c(40.76591, 40.7644, 40.71273, 40.76916), 
+                   lon = c(-73.97634, -73.97371, -74.00461, -73.98192), 
+                   route = c("Central Park S & 6 Ave", "Grand Army Plaza & Central Park S",'Centre St & Chambers St','Broadway & W 60 St'))
+
+```
+
+```{r}
+#| label: top_routes_by_customer
+#| fig-cap: "Most popular bike routes taken by customers"
+#| output: true
+
+ggmap(map2) + 
+geom_point(aes(x = lon, y = lat,  color=route), data = pop_station_customer, alpha = .8, size=5)
+```
+
+.
+
+We can see that:
+
+-   Subscribers did short trips from one location to another, while customers tended to rent and return the bike at the same station.
+
+-   The most popular routes taken by subscribers are all in Midtown Manhattan and are all short routes. I looked up the average trip duration for those routes and most of them are within 5-10 minutes.
+
+-   On the other hand, customers liked to rent and return bikes at stations around Central Park and Broadway, and the duration on average lasted for half an hour to an hour, much longer than those routes taken by the subscribers.
+
+# 3. Conclusion
+
+## 3.1 Summary 
+
+This project analyzes the usage of NYC bikeshare program from 2013 to 2018, focusing on the distribution of bike stations and their capacity, the number of trips and average trip duration, and the popular bike routes for different types of users. Visualizations are presented to help the reader grasp the information.
+
+In conclusion:
+
+-   The number of bike trips and the average trip duration gradually increased year by year, suggesting that the program is growing and people in NYC are using the bikes more and more.
+
+-   There are seasonal differences in terms of number of bike trips and trip duration. Both numbers are lower for the winter months than for the summer months.
+
+-   Different types of users show very different shared bike riding behavior. The subscribers (who bought the annual ridership plan) did a lot of short trips, on average for 13 minutes. The most popular routes for subscribers are all 5-10 minute short routes in Midtown Manhattan. On the other hand, customers (who bought a single trip or day pass) did fewer trips than subscribers, but the average trip duration is about an hour. Customers tended to rent and return the bike at the same station. Stations around Central Park were the most popular for them.
+
+## 3.2 Limitation
+
+There are a few limitations of the dataset and analysis:
+
+-   The bike station data does not include the time when the station was built, and does not include stations that were built after 2018. If such data was included, I would be able to look at the expansion of the bike station coverage and its relationship to bike usage, to see if there were interesting patterns to uncover.
+
+-   The bike trip data does not specify which user had taken a trip, only that the trip was taken by a certain type of user. This is reasonable for confidentiality reasons. The limitation is that the unit of analysis can only be "trips", not "users", and there is no way to distinguish whether the trips were made by a single user or different users. It would be interesting to see whether the analysis based on "users" would arrive at different conclusions from the analysis based on "trips", if some sort of unidentifiable user data could be provided.

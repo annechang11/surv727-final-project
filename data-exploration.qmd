@@ -1,0 +1,602 @@
+---
+title: "data-exploration"
+author: "Anne Chang"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(DBI)
+library(dbplyr)
+library(bigrquery)
+library(ggmap)
+library(RColorBrewer)
+```
+
+# Bike station visualization
+
+Load the bike station table with long and lat.
+
+Load a stadia map of NYC.
+
+Combine to look at the distribution of bike stations. Mark the capacity.
+
+## Connect to BigQuery
+
+```{r}
+project <- "surv-727-test-403119"
+```
+
+```{r}
+con <- dbConnect(
+  bigrquery::bigquery(),
+  project = "bigquery-public-data",
+  dataset = "new_york_citibike",
+  billing = project
+)
+con
+```
+
+```{r}
+# look at available tables
+dbListTables(con)
+
+# "citibike_stations" "citibike_trips"   
+```
+
+```{r}
+# look at variables in the bike station table
+dbListFields(con, "citibike_stations")
+```
+
+## Store the Bike Station table to R object for ggmap
+
+Check whether there are NA values in name, latitude or longitude.
+
+```{sql connection = con}
+SELECT COUNT (DISTINCT name)
+FROM citibike_stations
+WHERE name IS NOT NULL AND
+latitude IS NOT NULL AND 
+longitude IS NOT NULL AND
+num_bikes_available != 0 AND
+is_renting IS true;
+```
+
+-   2069 working bike stations, no null, no repeat, no 0 of available bikes
+
+Preview first 5 rows of table
+
+```{sql connection = con}
+
+SELECT name, latitude, longitude, num_bikes_available, 
+FROM citibike_stations
+WHERE name IS NOT NULL AND
+latitude IS NOT NULL AND 
+longitude IS NOT NULL AND
+num_bikes_available != 0 AND
+is_renting IS true
+ORDER BY longitude DESC
+LIMIT 5;
+```
+
+Store the SQL query into a R object
+
+```{r}
+# store the query in a R object
+
+query <-
+  "SELECT name, latitude, longitude, num_bikes_available, 
+FROM citibike_stations
+WHERE name IS NOT NULL AND
+latitude IS NOT NULL AND 
+longitude IS NOT NULL AND
+num_bikes_available != 0 AND
+is_renting IS true
+ORDER BY longitude DESC;"
+
+# store the result in a R table
+bike_stat_table <- dbGetQuery(con, query)
+str(bike_stat_table)
+
+```
+
+```{r}
+head(bike_stat_table)
+
+```
+
+## Create a map
+
+```{r}
+# stadia maps key
+stadia_key <- "36c51661-7684-4179-bc11-689fa6bae3c2"
+register_stadiamaps(stadia_key, write = TRUE)
+```
+
+```{r}
+# get NYC map 
+bbox <- c(left = -74.08670, bottom = 40.63338, right = -73.84978, top = 40.88630)
+map <- get_stadiamap(bbox = bbox, zoom = 12, maptype = "stamen_toner_lite")
+```
+
+```{r}
+ggmap(map) + 
+geom_point(aes(x = longitude, y = latitude, color=num_bikes_available), data = bike_stat_table, alpha = .8, size=0.3) +
+scale_color_gradient(low = "blue", high = "orange")
+```
+
+-   Bike stations cover Manhattan, Brooklyn, Queens, and some west part of Jersey City. Bronx and Staten Island are not covered.
+
+-   The bike stations at Midtown to Lower Manhattan and downtown Brooklyn have higher capacity than bike stations in other areas.
+
+Check top 5 bike stations with most number of bikes
+
+```{r}
+# mean of num of bikes at bike station
+mean(bike_stat_table$num_bikes_available) # 15.5
+median(bike_stat_table$num_bikes_available) # 12
+
+hist(bike_stat_table$num_bikes_available)
+
+
+# % of station under 20 bikes # 76%
+bike_stat_table %>%
+  filter(num_bikes_available <= 20) %>%
+  count()/2069
+
+# top 10 bike stations with most num of bikes
+top10_most_capacity <- bike_stat_table %>%
+  arrange(desc(num_bikes_available)) %>%
+  head(10)
+
+top10_most_capacity
+
+```
+
+-   Mean of num of bikes = 15.5. Median of num of bikes = 12.
+
+-   Right skewed distribution
+
+```{r}
+# map the top 10 highest capacity station
+ggmap(map) + 
+geom_point(aes(x = longitude, y = latitude,  size=num_bikes_available), data = top10_most_capacity, alpha = .8, color='blue')
+```
+
+-   Top 10 highest capacity stations are mostly in Midtown Manhattan.
+
+# Bike trips visualization
+
+```{r}
+# look at variables in the bike station table
+dbListFields(con, "citibike_trips")
+```
+
+```{sql connection = con}
+SELECT COUNT (*)
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0;
+```
+
+-   53,108,721 trips
+
+## Check year-month bike usage
+
+```{r}
+# store the query in a R object
+
+query2 <-
+  "SELECT EXTRACT(YEAR FROM starttime) AS year,EXTRACT(MONTH FROM starttime) AS month, count(*) AS count_
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY EXTRACT(YEAR FROM starttime), EXTRACT(MONTH FROM starttime);"
+
+# store the result in a R table
+trip_year_month_table <- dbGetQuery(con, query2)
+head(trip_year_month_table)
+
+```
+
+```{r}
+# reshape the year month data into a wide format to check missing months
+
+trip_year_month_table <- trip_year_month_table %>%
+  arrange(year, month)
+
+trip_year_month_table_wide <- spread(trip_year_month_table, month, count_)
+head(trip_year_month_table_wide)
+```
+
+```{r}
+# plot the year and month usage with a line plot
+
+trip_year_month_table$month <- as.factor(trip_year_month_table$month)
+trip_year_month_table$year <- as.factor(trip_year_month_table$year)
+
+ggplot(data=trip_year_month_table, aes(x=month, y=count_, group=year, color=year)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+    scale_color_viridis(discrete = TRUE, option = "G")
+```
+
+```{r}
+ggplot(data=trip_year_month_table, aes(x=month, y=count_, group=year, color=year)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+    scale_color_brewer(palette="BuPu")
+```
+
+-   The total number of trips increased every year from 2013 to 2018.
+
+-   There is an apparent seasonal difference. January and February have the lowest numbers of trips, likely due to cold weather condition. As it gets warmer, the numbers of bike trips increasingly rise from March to September, and fall again from October to December.
+
+## Check popular start stations
+
+```{sql connection = con}
+SELECT start_station_name, start_station_longitude AS longitude, start_station_latitude AS latitude, EXTRACT(YEAR FROM starttime) AS year, count(*) as count_
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY year, start_station_name
+ORDER BY count(*) DESC
+LIMIT 20;
+
+```
+
+```{r}
+# store the popular start stations in a table for mapping
+
+query3 <-
+  "SELECT start_station_name, EXTRACT(YEAR FROM starttime) AS year, count(*) as count_
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY year, start_station_name
+ORDER BY count(*) DESC
+LIMIT 20;"
+
+# store the result in a R table
+popular_start_station_table <- dbGetQuery(con, query3)
+head(popular_start_station_table)
+```
+
+```{r}
+# add back lat and long of stations in popular_station
+
+popular_start_stations <- merge(x = popular_start_station_table, y = bike_stat_table, by.x = "start_station_name", by.y = "name", all.x = TRUE)
+
+popular_start_stations
+```
+
+```{r}
+
+# bike_stat_table[str_detect(bike_stat_table$name, "Pershing"), ]
+```
+
+```{r}
+# popular_start_stations[str_detect(popular_start_stations$start_station_name, "Broadway"), 1]
+```
+
+```{r}
+# manually add the missing long and lat back to popular_start_station table
+
+popular_start_stations[popular_start_stations$start_station_name == 'Pershing Square North' ,]$latitude <- 40.75187
+
+popular_start_stations[popular_start_stations$start_station_name == 'Pershing Square North' ,]$longitude <- -73.97771
+
+popular_start_stations[popular_start_stations$start_station_name == 'Broadway & E 22 St' ,]$latitude <- 40.74034	
+
+popular_start_stations[popular_start_stations$start_station_name == 'Broadway & E 22 St' ,]$longitude <- -73.98955	
+```
+
+```{r}
+popular_start_stations
+```
+
+Map the popular start stations on ggmap
+
+```{r}
+# get Manhattan map 
+bbox2 <- c(left = -74.02, bottom = 40.7, right = -73.96, top = 40.775)
+map2 <- get_stadiamap(bbox = bbox2, zoom = 12, maptype = "stamen_toner_lite")
+```
+
+```{r}
+# map the top popular start stations
+ggmap(map2) + 
+geom_point(aes(x = longitude, y = latitude,  size=count_), data = popular_start_stations, alpha = .8, color='blue')
+```
+
+-   Popular start stations are all on Midtown to Lower Manhattan. It could be that the traffic volume in Manhattan is higher compared to Brooklyn and Queens.
+
+## Check popular end stations
+
+```{r}
+# store the popular end stations in a table for mapping
+
+query4 <-
+  "SELECT end_station_name, EXTRACT(YEAR FROM starttime) AS year, count(*) as count_
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY year, end_station_name
+ORDER BY count(*) DESC
+LIMIT 20;"
+
+# store the result in a R table
+popular_end_station_table <- dbGetQuery(con, query4)
+head(popular_end_station_table)
+```
+
+```{r}
+# add back lat and long of stations in popular_end_station
+
+popular_end_stations <- merge(x = popular_end_station_table, y = bike_stat_table, by.x = "end_station_name", by.y = "name", all.x = TRUE)
+
+popular_end_stations
+```
+
+```{r}
+popular_end_stations[str_detect(popular_end_stations$end_station_name, "Broadway"), 1]
+
+popular_end_stations[str_detect(popular_end_stations$end_station_name, "Pershing"), 1]
+```
+
+```{r}
+# manually add the missing long and lat back to popular_start_station table
+
+popular_end_stations[popular_end_stations$end_station_name == 'Pershing Square North' ,]$latitude <- 40.75187
+
+popular_end_stations[popular_end_stations$end_station_name == 'Pershing Square North' ,]$longitude <- -73.97771
+
+popular_end_stations[popular_end_stations$end_station_name == 'Broadway & E 22 St' ,]$latitude <- 40.74034	
+
+popular_end_stations[popular_end_stations$end_station_name == 'Broadway & E 22 St' ,]$longitude <- -73.98955	
+```
+
+```{r}
+# map the top popular end stations
+ggmap(map2) + 
+geom_point(aes(x = longitude, y = latitude,  size=count_), data = popular_end_stations, alpha = .8, color='blue')
+```
+
+-   The popular end stations are similar to popular start stations. All located in Manhattan.
+
+## Average trip time
+
+### Overall average trip duration
+
+```{sql connection = con}
+SELECT ROUND(AVG(tripduration)/60, 1) as overall_avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0;
+
+```
+
+-   Average overall trip time is 962 seconds = 16 minutes.
+
+### Average trip duration by year
+
+```{sql connection = con}
+SELECT EXTRACT(YEAR FROM starttime) AS year, ROUND(AVG(tripduration)/60, 1) as Avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY year
+ORDER BY year;
+
+```
+
+-   Average trip duration gradually increases every year, from 14 min in 2014 to 17 min in 2017 (note: 2018 only has Winter data, that's why the number drops).
+
+```{r}
+query5 <-
+  "SELECT EXTRACT(YEAR FROM starttime) AS year, ROUND(AVG(tripduration)/60, 1) as Avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY year
+ORDER BY year;"
+
+# store the result in a R table
+avg_duration_year <- dbGetQuery(con, query5)
+head(avg_duration_year)
+```
+
+```{r}
+avg_duration_year$year <- as.factor(avg_duration_year$year)
+
+ggplot(data=avg_duration_year, aes(x=year, y=Avg_trip_time)) +
+  geom_bar(stat="identity", width=0.5, fill="steelblue") + 
+  geom_text(aes(label=Avg_trip_time), vjust=1.6, color="white", size=3.5) +
+  labs(y= "avg_trip_time_minute") +
+  theme_minimal()
+```
+
+### Average trip duration by user group
+
+```{sql connection = con}
+SELECT usertype, COUNT(usertype) as num_of_trip, ROUND(AVG(tripduration)/60, 1) as Avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY usertype;
+```
+
+-   The annual plan subscribers did 7 times more bike trips than the one-time customers. Those trips on average were short trips (13 min). The one-time customers did fewer trips, but the trips were much longer (35 min on average).
+
+### What can't be done with this data: User age by group
+
+```{sql connection = con}
+SELECT usertype, AVG(EXTRACT(YEAR FROM starttime)-birth_year) as avg_age
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY usertype;
+```
+
+-   We may conclude that both subscriber and customer groups have an average age around 38-40 years old. However, this calculation is incorrect because it's using trip data, not user data, and there may be repeated users in the trip data. Same mistake in for the "[What are the top routes by gender?](https://console.cloud.google.com/marketplace/product/city-of-new-york/nyc-citi-bike?project=surv-727-test-403119)" example query provided on the dataset info page.
+
+## Popular Routes and their trip duration
+
+### Most popular routes - query example from dataset info page
+
+```{sql connection = con}
+SELECT
+  CONCAT(start_station_name, " to ", end_station_name) as route, 
+  COUNT(*) as num_trips,
+  ROUND(AVG(cast(tripduration as int64) / 60),1) as avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0
+GROUP BY start_station_name, end_station_name
+ORDER BY num_trips DESC
+LIMIT 10;
+```
+
+-   A lot of same start station and end station routes, not sure why. Could be real -- users rented the bike and went to do something, and returned the bike later at the same site. Or could be some kind of data processing error.
+
+-   Informative:
+
+    -   Popular Route 1: "12 Ave & W 40 St to West St & Chambers St", 18667 times, avg 24 min (interesting: Google maps estimate 18 min). Note that the other way around has 14353 trips and similar avg duration. So in total, this route had about 32000 trips.
+
+    -   Popular Route 2: "W 21 St & 6 Ave to 9 Ave & W 22 St", 17509 times, avg 5 min.
+
+    -   Popular Route 3: "W 21 St & 6 Ave to 10 Ave & W 22 St", 15120 times, avg 7 min.
+
+    -   Route 2 and Route 3 are very similar. Same start station. Very close end station. Can look at them in a combined way. In that sense, Route 1 "12 Ave & W 40 St to West St & Chambers St" and Route 2+3 "W 21 St & 6 Ave to 9/10 Ave & W 22 St" are at a similar volume of trips.
+
+## Plot the 2 routes on ggmap
+
+```{sql connection = con}
+SELECT start_station_name, start_station_latitude, start_station_longitude
+FROM citibike_trips
+WHERE start_station_name = 'Broadway & W 60 St'
+LIMIT 3;
+
+```
+
+```{r}
+# create a df for route location
+# 12 Ave & W 40 St: 40.76088, -74.00278
+# West St & Chambers St: 40.71755, -74.01322
+# W 21 St & 6 Ave: 40.74174, -73.99416
+# 9 Ave & W 22 St: 40.7455, -74.00197
+route_location <- data.frame(id = 1:2, 
+                   lat_1 = c(40.76088, 40.74174), 
+                   lon_1 = c(-74.00278, -73.99416), 
+                   lat_2 = c(40.71755, 40.7455), 
+                   lon_2 = c(-74.01322, -74.00197),
+                   route = c("12 Ave & W 40 St to West St & Chambers St", "W 21 St & 6 Ave to 9 Ave & W 22 St"))
+
+ggmap(map2) + 
+geom_segment(data = route_location, 
+             aes(x = lon_1, y = lat_1, xend = lon_2, yend = lat_2, color = route), size = 1.5, alpha = 0.8, lineend = "round")
+```
+
+### Popular routes by user group - Customer
+
+```{sql connection = con}
+SELECT
+  usertype,
+  CONCAT(start_station_name, " to ", end_station_name) as route, 
+  COUNT(*) as num_trips,
+  ROUND(AVG(cast(tripduration as int64) / 60),1) as avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0 AND 
+usertype = 'Customer'
+GROUP BY start_station_name, end_station_name, usertype
+ORDER BY num_trips DESC
+LIMIT 10;
+```
+
+-   Customers appear to tend to rent and return bikes at the same station for trips lasting for half an hour to one hour. The top 3 "routes" are:
+
+    -   Central Park S & 6 Ave, 46671 trips, avg trip duration 50 min
+
+    -   Grand Army Plaza & Central Park S, 21039 trips, avg trip duration 58 min
+
+    -   Grand Army Plaza & Central Park S, 17543 trips, avg trip duration 35 min
+
+-   Note that the overall most popular route "12 Ave & W 40 St to West St & Chambers St" had half of its traffic coming from Customers. 9798 out of 18667.
+
+## Plot the popular rent and return stations for Customers
+
+```{r}
+# Central Park S & 6 Ave: 40.76591, -73.97634
+# Grand Army Plaza & Central Park S: 40.7644, -73.97371
+# Centre St & Chambers St: 40.71273, -74.00461
+# Broadway & W 60 St: 40.76916, -73.98192
+
+pop_station_customer <- data.frame(id = 1:4, 
+                   lat = c(40.76591, 40.7644, 40.71273, 40.76916), 
+                   lon = c(-73.97634, -73.97371, -74.00461, -73.98192), 
+                   route = c("Central Park S & 6 Ave", "Grand Army Plaza & Central Park S",'Centre St & Chambers St','Broadway & W 60 St'))
+
+ggmap(map2) + 
+geom_point(aes(x = lon, y = lat,  color=route), data = pop_station_customer, alpha = .8, size=5)
+```
+
+### Popular routes by user group - Subscriber
+
+```{sql connection = con}
+SELECT
+  usertype,
+  CONCAT(start_station_name, " to ", end_station_name) as route, 
+  COUNT(*) as num_trips,
+  ROUND(AVG(cast(tripduration as int64) / 60),1) as avg_trip_time
+FROM citibike_trips
+WHERE tripduration IS NOT NULL AND
+tripduration != 0 AND 
+usertype = 'Subscriber'
+GROUP BY start_station_name, end_station_name, usertype
+ORDER BY num_trips DESC
+LIMIT 10;
+```
+
+-   Subscribers don't do same station renting and returning. They do short trips from location A to location B.
+
+-   For the overall most popular Route 2 (W 21 St & 6 Ave to 9 Ave & W 22 St) and Route 3 (W 21 St & 6 Ave to W 22 St & 10 Ave) we identified earlier, the traffic was mainly coming from Subscribers (98% - 17260 out of 17509, and 97% - 14715 out of 15120).
+
+-   Subscribers' trips on average are much shorter than Customers', mostly are within 5-10 minutes.
+
+```{sql connection = con}
+SELECT start_station_name, start_station_latitude, start_station_longitude
+FROM citibike_trips
+WHERE start_station_name = 'W 22 St & 10 Ave'
+LIMIT 3;
+```
+
+## Plot the popular routes of subscribers
+
+```{r}
+# create a df for route location
+# W 21 St & 6 Ave: 40.74174, -73.99416 to
+# 9 Ave & W 22 St: 40.7455, -74.00197
+
+# W 21 St & 6 Ave: 40.74174, -73.99416 to
+# W 22 St & 10 Ave: 40.74692, -74.00452
+
+# Pershing Square North: 40.75187, -73.97771 to
+# W 33 St & 7 Ave: 40.7502, -73.99093
+
+# W 22 St & 10 Ave: 40.74692, -74.00452 to
+# W 22 St & 8 Ave: 40.74475, -73.99915
+# Pershing Square North to 
+# E 24 St & Park Ave S: 40.74096, -73.98602
+
+pop_route_subscriber <- data.frame(id = 1:5, 
+                   lat_1 = c(40.74174, 40.74174, 40.75187, 40.74692, 40.75187), 
+                   lon_1 = c(-73.99416, -73.99416, -73.97771, -74.00452, -73.97771), 
+                   lat_2 = c(40.7455, 40.74692, 40.7502, 40.74475, 40.74096), 
+                   lon_2 = c(-74.00197, -74.00452, -73.99093, -73.99915, -73.98602),
+                   route = c("W 21 St & 6 Ave to W 22 St & 9 Ave", "W 21 St & 6 Ave to W 22 St & 10 Ave","Pershing Square North to W 33 St & 7 Ave", "W 22 St & 10 Ave to W 22 St & 8 Ave", "Pershing Square North to E 24 St & Park Ave S"))
+
+ggmap(map2) + 
+geom_segment(data = pop_route_subscriber, 
+             aes(x = lon_1, y = lat_1, xend = lon_2, yend = lat_2, color = route), size = 1.5, alpha = 0.8, lineend = "round")
+```
